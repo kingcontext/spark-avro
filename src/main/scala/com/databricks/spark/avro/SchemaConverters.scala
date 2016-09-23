@@ -136,6 +136,10 @@ object SchemaConverters {
     createConverterToAvro(dataType, schema)(row).asInstanceOf[GenericRecord]
   }
   
+  def testCreateConverterToAvro(dataType: DataType, schema: Schema): (Any) => Any = createConverterToAvro(dataType, schema)
+  
+  def flushCache = dtCache.clear()
+  
   private[avro] def createConverterToAvro(dataType: DataType, schema: Schema): (Any) => Any = {
     dataType match {
       case BinaryType => (item: Any) => item match {
@@ -160,11 +164,9 @@ object SchemaConverters {
           case ENUM => {
             (item: Any) => {
               if (item == null) {
-                //println("IT IS A NULL ENUM: " + item)
                 null
               }
               else {
-                //println("WRITING ENUM: " + item)         
                 new GenericData.EnumSymbol(elementSchema, item.asInstanceOf[String])
               }
             }
@@ -206,8 +208,10 @@ object SchemaConverters {
         }
       // Avro maps only support string keys
       case MapType(StringType, valueType, _) =>        
+        //debug("** Map for value type " + valueType + "  matching schema " + schema.getType)
         val valueConverter = createConverterToAvro(valueType, schema.getValueType)
         (item: Any) => {
+          
           if (item == null) null
           else {
             val javaMap = new HashMap[String, Any]()
@@ -218,13 +222,13 @@ object SchemaConverters {
           }
         }
       case structType: StructType => {
-        //println("** Struct matching schema " + schema.getType)
+        //debug("** Struct matching schema " + schema.getType)
         schema.getType match {
           case UNION => {
             if (schema.getTypes.exists(_.getType == NULL)) {
               val remainingUnionTypes = schema.getTypes.filterNot(_.getType == NULL)
               if (remainingUnionTypes.size == 1) {
-                //println("PROCESSING UNION createConverterToAvro with " + structType.toString() + ", schema of field is " + remainingUnionTypes.get(0))
+                debug("PROCESSING UNION createConverterToAvro with " + structType.toString() + ", schema of field is " + remainingUnionTypes.get(0))
                 createConverterToAvro(structType, remainingUnionTypes.get(0))
               }
               else {
@@ -239,14 +243,20 @@ object SchemaConverters {
           }
           case _ => {
             val fieldConverters = structType.fields.map(f => {
-              val s = schema.getField(f.name).schema()
-              //println("PROCESSING _ createConverterToAvro with " + f.dataType.toString() + ", schema of field " + f.name + " is " + s)
-              createConverterToAvro(f.dataType, s)
+              val s = schema.getField(f.name)
+              if (s == null) {
+                //debug("WARNING: struct field " + f.name + " not present in avro schema, ignoring!")
+                null
+              }
+              else {
+                val sch = s.schema()
+                //debug("PROCESSING _ createConverterToAvro with " + f.dataType.toString() + ", schema of field " + f.name + " is " + sch)
+                createConverterToAvro(f.dataType, sch)
+              }
             })
             (item: Any) => {
               if (item == null) null
               else {
-                //println("FUNCTION for struct " + item)
                 val record = new GenericData.Record(schema)
                 val convertersIterator = fieldConverters.iterator
                 val fieldNamesIterator = dataType.asInstanceOf[StructType].fieldNames.iterator
@@ -254,7 +264,12 @@ object SchemaConverters {
     
                 while (convertersIterator.hasNext) {
                   val converter = convertersIterator.next()
-                  record.put(fieldNamesIterator.next(), converter(rowIterator.next()))
+                  val fName = fieldNamesIterator.next()
+                  val r = rowIterator.next()
+                  //debug("PROCESSING: " + fName + ", " + r + " : " + converter)
+                  if (converter != null) {
+                    record.put(fName, converter(r))
+                  }
                 }
                 record
               }
@@ -465,6 +480,7 @@ object SchemaConverters {
   }
   
 
+  private def debug(s: String) = println(s)
   
   
 }
